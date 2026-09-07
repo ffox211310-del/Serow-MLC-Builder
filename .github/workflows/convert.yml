@@ -1,0 +1,37 @@
+name: Convert to MLC
+
+on:
+  workflow_dispatch: # 手動実行ボタン
+
+jobs:
+  convert:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install MLC-LLM
+        run: |
+          pip install --pre -U -f https://mlc.ai/wheels mlc-llm-nightly-cu122 mlc-ai-nightly-cu122
+          pip install huggingface_hub
+
+      - name: Download Serow model
+        run: |
+          huggingface-cli download WebAIPocket/Serow-Qwen2.5-0.5B-Instruct --local-dir ./model --local-dir-use-symlinks False
+
+      - name: Convert to MLC (q4f16_1)
+        run: |
+          export QUANTIZATION=q4f16_1
+          mlc_llm gen_config ./model --quantization $QUANTIZATION --conv-template qwen2 -o ./dist
+          mlc_llm convert_weight ./model --quantization $QUANTIZATION -o ./dist
+
+      - name: Upload to HF - MLC repo
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          pip install -q huggingface_hub
+          huggingface-cli upload WebAIPocket/Serow-Qwen2.5-0.5B-Instruct-q4f16_1-MLC ./dist --repo-type model --token $HF_TOKEN
