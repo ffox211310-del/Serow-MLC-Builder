@@ -2,25 +2,64 @@ name: Convert to MLC
 
 on:
   workflow_dispatch:
+    inputs:
+      mlc_ai_version:
+        description: "mlc-ai-nightly-cpu"
+        required: false
+        default: ""
+      mlc_llm_version:
+        description: "mlc-llm-nightly-cpu"
+        required: false
+        default: ""
 
 jobs:
   convert:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Install MLC-LLM
+      - name: Show available nightly versions (for bisecting)
         run: |
           python -m pip install --upgrade pip
-          python -m pip install "numpy<2" --force-reinstall
+          echo "=== mlc-ai-nightly-cpu の利用可能バージョン ==="
+          pip index versions mlc-ai-nightly-cpu -f https://mlc.ai/wheels || true
+          echo "=== mlc-llm-nightly-cpu の利用可能バージョン ==="
+          pip index versions mlc-llm-nightly-cpu -f https://mlc.ai/wheels || true
+
+      - name: Install base deps
+        run: |
           python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
-          python -m pip install --pre -U -f https://mlc.ai/wheels mlc-llm-nightly-cpu mlc-ai-nightly-cpu
           python -m pip install huggingface_hub hf_transfer psutil
+
+      - name: Install MLC-LLM (pinned or latest)
+        run: |
+          if [ -n "${{ inputs.mlc_ai_version }}" ] && [ -n "${{ inputs.mlc_llm_version }}" ]; then
+            echo "Pinned install: ai=${{ inputs.mlc_ai_version }} llm=${{ inputs.mlc_llm_version }}"
+            python -m pip install --pre -f https://mlc.ai/wheels \
+              "mlc-ai-nightly-cpu==${{ inputs.mlc_ai_version }}" \
+              "mlc-llm-nightly-cpu==${{ inputs.mlc_llm_version }}"
+          else
+            echo "No pin specified, installing latest nightly"
+            python -m pip install --pre -U -f https://mlc.ai/wheels \
+              mlc-llm-nightly-cpu mlc-ai-nightly-cpu
+          fi
+
+      - name: Re-pin numpy<2 (defense against transitive upgrade)
+        run: |
+          python -m pip install "numpy<2" --force-reinstall
+
+      - name: Show resolved versions (record this if it works!)
+        run: |
+          echo "--- Installed versions ---"
+          pip show numpy | grep Version
+          pip show mlc-ai-nightly-cpu | grep Version
+          pip show mlc-llm-nightly-cpu | grep Version
+          pip show torch | grep Version
 
       - name: Download Serow model
         env:
