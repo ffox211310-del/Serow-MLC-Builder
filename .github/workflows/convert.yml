@@ -37,7 +37,7 @@ jobs:
             --task text-generation \
             --opset 18 \
             --trust-remote-code \
-            --dtype float16 \
+            --dtype fp16 \
             ./onnx_model
 
       - name: Create HF repo if not exists
