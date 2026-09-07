@@ -1,7 +1,7 @@
 name: Convert to MLC
 
 on:
-  workflow_dispatch: # 手動実行ボタン
+  workflow_dispatch:
 
 jobs:
   convert:
@@ -16,22 +16,30 @@ jobs:
 
       - name: Install MLC-LLM
         run: |
-          pip install --pre -U -f https://mlc.ai/wheels mlc-llm-nightly-cu122 mlc-ai-nightly-cu122
-          pip install huggingface_hub
+          pip install --upgrade pip
+          pip install mlc-llm -f https://mlc.ai/wheels --pre
+          pip install huggingface_hub hf_transfer
 
       - name: Download Serow model
+        env:
+          HF_HUB_ENABLE_HF_TRANSFER: 1
         run: |
-          huggingface-cli download WebAIPocket/Serow-Qwen2.5-0.5B-Instruct --local-dir ./model --local-dir-use-symlinks False
+          hf download WebAIPocket/Serow-Qwen2.5-0.5B-Instruct --local-dir ./model --local-dir-use-symlinks False
 
-      - name: Convert to MLC (q4f16_1)
-        run: |
-          export QUANTIZATION=q4f16_1
-          mlc_llm gen_config ./model --quantization $QUANTIZATION --conv-template qwen2 -o ./dist
-          mlc_llm convert_weight ./model --quantization $QUANTIZATION -o ./dist
-
-      - name: Upload to HF - MLC repo
+      - name: Create MLC repo if not exists
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          pip install -q huggingface_hub
-          huggingface-cli upload WebAIPocket/Serow-Qwen2.5-0.5B-Instruct-q4f16_1-MLC ./dist --repo-type model --token $HF_TOKEN
+          hf repo create WebAIPocket/Serow-Qwen2.5-0.5B-Instruct-q4f16_1-MLC --repo-type model --exist-ok --token $HF_TOKEN
+
+      - name: Convert to MLC (q4f16_1)
+        run: |
+          mlc_llm gen_config ./model --quantization q4f16_1 --conv-template qwen2 -o ./dist
+          mlc_llm convert_weight ./model --quantization q4f16_1 -o ./dist
+          ls -lh ./dist
+
+      - name: Upload to HF
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          hf upload WebAIPocket/Serow-Qwen2.5-0.5B-Instruct-q4f16_1-MLC ./dist --repo-type model --token $HF_TOKEN
