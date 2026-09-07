@@ -16,15 +16,15 @@ jobs:
 
       - name: Install MLC-LLM
         run: |
-          pip install --upgrade pip
-          pip install mlc-llm -f https://mlc.ai/wheels --pre
-          pip install huggingface_hub hf_transfer
+          python -m pip install --upgrade pip
+          python -m pip install --pre -U -f https://mlc.ai/wheels mlc-llm-nightly-cpu mlc-ai-nightly-cpu
+          python -m pip install huggingface_hub hf_transfer
 
       - name: Download Serow model
         env:
           HF_HUB_ENABLE_HF_TRANSFER: 1
         run: |
-          hf download WebAIPocket/Serow-Qwen2.5-0.5B-Instruct --local-dir ./model --local-dir-use-symlinks False
+          hf download WebAIPocket/Serow-Qwen2.5-0.5B-Instruct --local-dir ./model
 
       - name: Create MLC repo if not exists
         env:
@@ -34,8 +34,8 @@ jobs:
 
       - name: Convert to MLC (q4f16_1)
         run: |
-          mlc_llm gen_config ./model --quantization q4f16_1 --conv-template qwen2 -o ./dist
-          mlc_llm convert_weight ./model --quantization q4f16_1 -o ./dist
+          python -m mlc_llm gen_config ./model --quantization q4f16_1 --conv-template qwen2 -o ./dist
+          python -m mlc_llm convert_weight ./model --quantization q4f16_1 -o ./dist
           ls -lh ./dist
 
       - name: Upload to HF
