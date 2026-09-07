@@ -6,40 +6,109 @@ on:
 jobs:
   convert:
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/checkout@v4
-      
+
+      # Python 3.11
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
+      # MLC-LLM CPU版をインストール
       - name: Install MLC-LLM
         run: |
           python -m pip install --upgrade pip
-          python -m pip install --pre -U -f https://mlc.ai/wheels mlc-llm-nightly-cpu mlc-ai-nightly-cpu
+          python -m pip install --pre -U -f https://mlc.ai/wheels \
+            mlc-llm-nightly-cpu \
+            mlc-ai-nightly-cpu
           python -m pip install huggingface_hub hf_transfer psutil
 
+      # Hugging FaceからSerowを取得
       - name: Download Serow model
         env:
           HF_HUB_ENABLE_HF_TRANSFER: 1
         run: |
-          hf download WebAIPocket/Serow-Qwen2.5-0.5B-Instruct --local-dir ./model
+          hf download \
+            WebAIPocket/Serow-Qwen2.5-0.5B-Instruct \
+            --local-dir ./model
 
+      # MLCが要求するrope_thetaを追加
+      - name: Fix rope_theta for MLC
+        run: |
+          python - <<'PY'
+          import json
+
+          path = "./model/config.json"
+
+          with open(path, "r", encoding="utf-8") as f:
+              config = json.load(f)
+
+          # 新形式:
+          # "rope_parameters": {
+          #     "rope_theta": 1000000.0
+          # }
+          #
+          # MLCが要求する旧形式:
+          # "rope_theta": 1000000.0
+
+          if "rope_theta" not in config:
+              if "rope_parameters" in config and "rope_theta" in config["rope_parameters"]:
+                  config["rope_theta"] = config["rope_parameters"]["rope_theta"]
+                  print("Added rope_theta:", config["rope_theta"])
+              else:
+                  raise RuntimeError(
+                      "rope_theta could not be found in config.json"
+                  )
+          else:
+              print("rope_theta already exists:", config["rope_theta"])
+
+          with open(path, "w", encoding="utf-8") as f:
+              json.dump(config, f, indent=2, ensure_ascii=False)
+
+          print("model_type:", config.get("model_type"))
+          print("rope_theta:", config.get("rope_theta"))
+          print("rope_parameters:", config.get("rope_parameters"))
+          PY
+
+      # MLC形式へ変換
+      - name: Convert to MLC (q4f16_1)
+        run: |
+          rm -rf ./dist
+
+          python -m mlc_llm gen_config \
+            ./model \
+            --quantization q4f16_1 \
+            --conv-template qwen2 \
+            -o ./dist
+
+          python -m mlc_llm convert_weight \
+            ./model \
+            --quantization q4f16_1 \
+            -o ./dist
+
+          echo "===== MLC output ====="
+          ls -lh ./dist
+
+      # Hugging Face上にリポジトリを作成
       - name: Create MLC repo if not exists
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          hf repo create WebAIPocket/Serow-Qwen2.5-0.5B-Instruct-q4f16_1-MLC --repo-type model --exist-ok --token $HF_TOKEN
+          hf repo create \
+            WebAIPocket/Serow-Qwen2.5-0.5B-Instruct-q4f16_1-MLC \
+            --repo-type model \
+            --exist-ok \
+            --token "$HF_TOKEN"
 
-      - name: Convert to MLC (q4f16_1)
-        run: |
-          python -m mlc_llm gen_config ./model --quantization q4f16_1 --conv-template qwen2 -o ./dist
-          python -m mlc_llm convert_weight ./model --quantization q4f16_1 -o ./dist
-          ls -lh ./dist
-
+      # MLC変換結果をアップロード
       - name: Upload to HF
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          hf upload WebAIPocket/Serow-Qwen2.5-0.5B-Instruct-q4f16_1-MLC ./dist --repo-type model --token $HF_TOKEN
+          hf upload \
+            WebAIPocket/Serow-Qwen2.5-0.5B-Instruct-q4f16_1-MLC \
+            ./dist \
+            --repo-type model \
+            --token "$HF_TOKEN"
