@@ -1,16 +1,7 @@
-name: Convert to MLC
+name: Convert to ONNX
 
 on:
   workflow_dispatch:
-    inputs:
-      mlc_ai_version:
-        description: "mlc-ai-nightly-cpu"
-        required: false
-        default: ""
-      mlc_llm_version:
-        description: "mlc-llm-nightly-cpu"
-        required: false
-        default: ""
 
 jobs:
   convert:
@@ -23,76 +14,45 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Show available nightly versions (for bisecting)
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          echo "=== mlc-ai-nightly-cpu の利用可能バージョン ==="
-          pip index versions mlc-ai-nightly-cpu -f https://mlc.ai/wheels || true
-          echo "=== mlc-llm-nightly-cpu の利用可能バージョン ==="
-          pip index versions mlc-llm-nightly-cpu -f https://mlc.ai/wheels || true
-
-      - name: Install base deps
-        run: |
+          # ONNX変換に必要なライブラリをインストール
           python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
-          python -m pip install huggingface_hub hf_transfer psutil
-
-      - name: Install MLC-LLM (pinned or latest)
-        run: |
-          if [ -n "${{ inputs.mlc_ai_version }}" ] && [ -n "${{ inputs.mlc_llm_version }}" ]; then
-            echo "Pinned install: ai=${{ inputs.mlc_ai_version }} llm=${{ inputs.mlc_llm_version }}"
-            python -m pip install --pre -f https://mlc.ai/wheels \
-              "mlc-ai-nightly-cpu==${{ inputs.mlc_ai_version }}" \
-              "mlc-llm-nightly-cpu==${{ inputs.mlc_llm_version }}"
-          else
-            echo "No pin specified, installing latest nightly"
-            python -m pip install --pre -U -f https://mlc.ai/wheels \
-              mlc-llm-nightly-cpu mlc-ai-nightly-cpu
-          fi
-
-      - name: Re-pin numpy<2 (defense against transitive upgrade)
-        run: |
-          python -m pip install "numpy<2" --force-reinstall
-
-      - name: Show resolved versions (record this if it works!)
-        run: |
-          echo "--- Installed versions ---"
-          pip show numpy | grep Version
-          pip show mlc-ai-nightly-cpu | grep Version
-          pip show mlc-llm-nightly-cpu | grep Version
-          pip show torch | grep Version
+          python -m pip install huggingface_hub hf_transfer
+          # OptimumとONNXRuntimeをインストール
+          python -m pip install optimum[onnxruntime] transformers
 
       - name: Download Serow model
         env:
           HF_HUB_ENABLE_HF_TRANSFER: 1
         run: |
-          hf download WebAIPocket/Serow-Qwen2.5-0.5B-Instruct --local-dir ./model
+          huggingface-cli download WebAIPocket/Serow-Qwen2.5-0.5B-Instruct --local-dir ./model
 
-      - name: Patch config.json for Qwen2.5
+      - name: Convert to ONNX with Optimum
         run: |
-          python - << 'PY'
-          import json, pathlib
-          p = pathlib.Path("./model/config.json")
-          cfg = json.loads(p.read_text())
-          cfg.setdefault("rope_theta", 1000000.0)
-          cfg.setdefault("max_position_embeddings", 32768)
-          p.write_text(json.dumps(cfg, indent=2))
-          print("Patched rope_theta =", cfg["rope_theta"])
-          PY
+          # モデルをONNXにエクスポート
+          optimum-cli export onnx \
+            --model ./model \
+            --task text-generation \
+            --opset 18 \
+            --trust-remote-code \
+            --dtype float16 \
+            ./onnx_model
 
-      - name: Create MLC repo if not exists
+      - name: Create HF repo if not exists
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          hf repo create WebAIPocket/Serow-Qwen2.5-0.5B-Instruct-q4f16_1-MLC --repo-type model --exist-ok --token $HF_TOKEN
-
-      - name: Convert to MLC (q4f16_1)
-        run: |
-          python -m mlc_llm gen_config ./model --quantization q4f16_1 --conv-template qwen2 --model-type qwen2 -o ./dist
-          python -m mlc_llm convert_weight ./model --quantization q4f16_1 -o ./dist
-          ls -lh ./dist
+          huggingface-cli repo create WebAIPocket/Serow-Qwen2.5-0.5B-Instruct-ONNX \
+            --repo-type model --exist-ok --token $HF_TOKEN
 
       - name: Upload to HF
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          hf upload WebAIPocket/Serow-Qwen2.5-0.5B-Instruct-q4f16_1-MLC ./dist --repo-type model --token $HF_TOKEN
+          huggingface-cli upload \
+            WebAIPocket/Serow-Qwen2.5-0.5B-Instruct-ONNX \
+            ./onnx_model \
+            --repo-type model \
+            --token $HF_TOKEN
