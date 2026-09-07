@@ -18,7 +18,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install --pre -U -f https://mlc.ai/wheels mlc-llm-nightly-cpu mlc-ai-nightly-cpu
-          python -m pip install huggingface_hub hf_transfer
+          python -m pip install huggingface_hub hf_transfer psutil
 
       - name: Download Serow model
         env:
