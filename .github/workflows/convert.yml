@@ -1,10 +1,10 @@
-name: Convert to ONNX
+name: Convert to MLC (q4f16_1)
 
 on:
   workflow_dispatch:
 
 jobs:
-  convert:
+  convert-mlc:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -17,34 +17,38 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          # ONNX変換に必要なライブラリをインストール
           python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
           python -m pip install huggingface_hub hf_transfer
-          # OptimumとONNXRuntimeをインストール
-          python -m pip install optimum[onnxruntime] transformers
+          
+          # MLC LLM (CPU安定版 wheel) のインストール
+          # nightlyのバグを避けるため、安定して動作するインデックスからCPU版パッケージを指定
+          python -m pip install --pre -U -f https://mlc.ai/wheels mlc-llm-cpu mlc-ai-cpu
 
-      - name: Download Serow model
+      - name: Download HuggingFace Model
         env:
           HF_HUB_ENABLE_HF_TRANSFER: 1
         run: |
           huggingface-cli download WebAIPocket/Serow-Qwen2.5-0.5B-Instruct --local-dir ./model
 
-      - name: Convert to ONNX with Optimum
+      - name: Convert & Quantize to MLC (q4f16_1)
         run: |
-          # モデルをONNXにエクスポート
-          optimum-cli export onnx \
-            --model ./model \
-            --task text-generation \
-            --opset 18 \
-            --trust-remote-code \
-            --dtype fp16 \
-            ./onnx_model
+          # MLC LLM 変換・量子化の実行
+          # 1. コンフィグファイルの生成
+          python -m mlc_llm gen_config ./model \
+            --quantization q4f16_1 \
+            --conv-template qwen2 \
+            -o ./mlc_model
+
+          # 2. 重みの変換と量子化
+          python -m mlc_llm convert_weight ./model \
+            --quantization q4f16_1 \
+            -o ./mlc_model
 
       - name: Create HF repo if not exists
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          huggingface-cli repo create WebAIPocket/Serow-Qwen2.5-0.5B-Instruct-ONNX \
+          huggingface-cli repo create WebAIPocket/Serow-Qwen2.5-0.5B-Instruct-MLC-q4f16_1 \
             --repo-type model --exist-ok --token $HF_TOKEN
 
       - name: Upload to HF
@@ -52,7 +56,7 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           huggingface-cli upload \
-            WebAIPocket/Serow-Qwen2.5-0.5B-Instruct-ONNX \
-            ./onnx_model \
+            WebAIPocket/Serow-Qwen2.5-0.5B-Instruct-MLC-q4f16_1 \
+            ./mlc_model \
             --repo-type model \
             --token $HF_TOKEN
