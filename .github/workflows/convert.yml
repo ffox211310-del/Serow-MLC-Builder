@@ -6,59 +6,147 @@ on:
 jobs:
   convert-mlc:
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
 
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Python 3.11
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
+      # MLC CPU stable version
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
-          python -m pip install huggingface_hub
-          
-          # MLC LLM (CPU安定版) のインストール
-          python -m pip install --pre -U -f https://mlc.ai/wheels mlc-llm-cpu mlc-ai-cpu
 
+          # CPU版PyTorch
+          python -m pip install \
+            torch \
+            --index-url https://download.pytorch.org/whl/cpu
+
+          # Hugging Face
+          python -m pip install huggingface_hub
+
+          # MLC-LLM CPU stable version
+          python -m pip install \
+            -f https://mlc.ai/wheels \
+            mlc-llm-cpu==0.20.0.dev0 \
+            mlc-ai-cpu==0.20.0
+
+      # MLC installation check
+      - name: Check MLC installation
+        run: |
+          python -c "import mlc_llm; print('MLC-LLM:', mlc_llm.__path__)"
+          python -m mlc_llm --help
+
+      # Download model
       - name: Download HuggingFace Model
         env:
           HF_XET_HIGH_PERFORMANCE: 1
         run: |
-          # huggingface-cli の代わりに新しい 'hf' コマンドを使用
-          hf download WebAIPocket/Serow-Qwen2.5-0.5B-Instruct --local-dir ./model
+          hf download \
+            WebAIPocket/Serow-Qwen2.5-0.5B-Instruct \
+            --local-dir ./model
 
-      - name: Convert & Quantize to MLC (q4f16_1)
+      # Fix config for older MLC
+      - name: Fix rope_theta
         run: |
-          # 1. コンフィグファイルの生成
-          python -m mlc_llm gen_config ./model \
+          python - <<'PY'
+          import json
+
+          path = "./model/config.json"
+
+          with open(path, "r", encoding="utf-8") as f:
+              config = json.load(f)
+
+          # Qwen2.5の新しい形式
+          # "rope_parameters": {
+          #     "rope_theta": 1000000.0
+          # }
+          #
+          # 古いMLCが要求する形式
+          # "rope_theta": 1000000.0
+
+          if "rope_theta" not in config:
+              if (
+                  "rope_parameters" in config
+                  and "rope_theta" in config["rope_parameters"]
+              ):
+                  config["rope_theta"] = config["rope_parameters"]["rope_theta"]
+                  print(
+                      "Added top-level rope_theta:",
+                      config["rope_theta"]
+                  )
+              else:
+                  raise RuntimeError(
+                      "Could not find rope_theta in config.json"
+                  )
+          else:
+              print(
+                  "rope_theta already exists:",
+                  config["rope_theta"]
+              )
+
+          with open(path, "w", encoding="utf-8") as f:
+              json.dump(
+                  config,
+                  f,
+                  indent=2,
+                  ensure_ascii=False
+              )
+
+          print("model_type:", config.get("model_type"))
+          print("rope_theta:", config.get("rope_theta"))
+          print("rope_parameters:", config.get("rope_parameters"))
+          PY
+
+      # Generate MLC config
+      - name: Generate MLC config
+        run: |
+          rm -rf ./mlc_model
+
+          python -m mlc_llm gen_config \
+            ./model \
             --quantization q4f16_1 \
             --conv-template qwen2 \
             -o ./mlc_model
 
-          # 2. 重みの変換と量子化
-          python -m mlc_llm convert_weight ./model \
+      # Convert and quantize weights
+      - name: Convert weights
+        run: |
+          python -m mlc_llm convert_weight \
+            ./model \
             --quantization q4f16_1 \
             -o ./mlc_model
 
+      # Show result
+      - name: Check output
+        run: |
+          echo "===== MLC output ====="
+          find ./mlc_model -maxdepth 2 -type f -printf "%p %s bytes\n"
+
+      # Create Hugging Face repository
       - name: Create HF repo if not exists
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          # リポジトリ作成（hf 形式）
-          hf repos create WebAIPocket/Serow-Qwen2.5-0.5B-Instruct-MLC-q4f16_1 \
-            --type model --exist-ok --token $HF_TOKEN
+          hf repos create \
+            WebAIPocket/Serow-Qwen2.5-0.5B-Instruct-MLC-q4f16_1 \
+            --repo-type model \
+            --exist-ok \
+            --token "$HF_TOKEN"
 
-      - name: Upload to HF
+      # Upload
+      - name: Upload to Hugging Face
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          # アップロード（hf 形式）
           hf upload \
             WebAIPocket/Serow-Qwen2.5-0.5B-Instruct-MLC-q4f16_1 \
             ./mlc_model \
             . \
-            --type model \
-            --token $HF_TOKEN
+            --repo-type model \
+            --token "$HF_TOKEN"
